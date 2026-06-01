@@ -105,7 +105,11 @@ public class NetworkClient {
 
     private void notifyPacket(ChatPacket packet) {
         if (listener != null) {
-            SwingUtilities.invokeLater(() -> listener.accept(packet));
+            if (packet.type() == PacketType.VOICE_FRAME) {
+                listener.accept(packet);
+            } else {
+                SwingUtilities.invokeLater(() -> listener.accept(packet));
+            }
         }
     }
 }

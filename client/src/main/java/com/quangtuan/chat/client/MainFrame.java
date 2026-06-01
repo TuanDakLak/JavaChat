@@ -6,10 +6,12 @@ import com.quangtuan.chat.common.GroupInfo;
 import com.quangtuan.chat.common.PacketType;
 import com.quangtuan.chat.common.UserInfo;
 
+import javax.swing.AbstractAction;
 import javax.swing.BorderFactory;
 import javax.swing.DefaultComboBoxModel;
 import javax.swing.DefaultListModel;
 import javax.swing.JButton;
+import javax.swing.JCheckBox;
 import javax.swing.JComboBox;
 import javax.swing.JFileChooser;
 import javax.swing.JFrame;
@@ -22,7 +24,9 @@ import javax.swing.JScrollPane;
 import javax.swing.JTabbedPane;
 import javax.swing.JTextArea;
 import javax.swing.JTextField;
+import javax.swing.KeyStroke;
 import javax.swing.ListSelectionModel;
+import javax.swing.SwingUtilities;
 import java.awt.BorderLayout;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
@@ -30,6 +34,9 @@ import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
 import java.awt.GridLayout;
 import java.awt.Insets;
+import java.awt.event.ActionEvent;
+import java.awt.event.InputEvent;
+import java.awt.event.KeyEvent;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -44,8 +51,18 @@ import java.util.Set;
 
 public class MainFrame extends JFrame {
     private static final DateTimeFormatter TIME = DateTimeFormatter.ofPattern("dd/MM HH:mm");
+    private static final String[] EMOJIS = {
+            "\uD83D\uDE00",
+            "\uD83D\uDE02",
+            "\uD83D\uDE0D",
+            "\uD83D\uDE0E",
+            "\uD83D\uDC4D",
+            "\uD83D\uDE4F",
+            "\u2764\uFE0F"
+    };
 
     private final NetworkClient network = new NetworkClient();
+    private final VoiceChatManager voiceChat;
     private final DefaultListModel<ServerProfile> serverModel = new DefaultListModel<>();
     private final JList<ServerProfile> serverList = new JList<>(serverModel);
     private final DefaultListModel<UserInfo> onlineModel = new DefaultListModel<>();
@@ -58,24 +75,28 @@ public class MainFrame extends JFrame {
     private final JTabbedPane conversationTabs = new JTabbedPane();
     private final Map<String, JTextArea> conversations = new HashMap<>();
     private final Map<String, JPanel> conversationPanels = new HashMap<>();
+    private final Map<String, JButton> voiceButtons = new HashMap<>();
     private final Map<String, List<ChatMessage>> conversationMessages = new HashMap<>();
     private final Set<Integer> joinedGroupIds = new HashSet<>();
     private final DefaultListModel<ChatMessage> historyModel = new DefaultListModel<>();
     private final JList<ChatMessage> historyList = new JList<>(historyModel);
     private final JLabel sessionStatus = new JLabel("Chua dang nhap");
     private final JLabel serverStatus = new JLabel("Server: chua ket noi");
+    private final JLabel voiceStatus = new JLabel("Voice: chua hoat dong");
     private final JLabel selectedServerInfo = new JLabel("Server da chon: chua co");
     private final JLabel loginServerStatus = new JLabel("Chua ket noi server");
     private final JLabel onlineCountLabel = new JLabel("0 user online");
+    private final JCheckBox enterToSendCheckBox = new JCheckBox("Enter gui", true);
+    private final JLabel enterModeHint = new JLabel("Shift+Enter xuong dong");
     private JButton loginButton;
     private JButton registerButton;
     private JButton logoutButton;
-    private UserInfo currentUser;
+    private volatile UserInfo currentUser;
     private ServerProfile activeServer;
-    private File selectedFile;
 
     public MainFrame() {
         super("JavaChat Swing");
+        voiceChat = new VoiceChatManager(network, new VoiceStatusListener());
         setDefaultCloseOperation(EXIT_ON_CLOSE);
         setMinimumSize(new Dimension(980, 640));
         setLocationRelativeTo(null);
@@ -88,9 +109,10 @@ public class MainFrame extends JFrame {
         logoutButton.setVisible(false);
         logoutButton.addActionListener(e -> logout());
 
-        JPanel statusText = new JPanel(new GridLayout(2, 1, 0, 2));
+        JPanel statusText = new JPanel(new GridLayout(3, 1, 0, 2));
         statusText.add(sessionStatus);
         statusText.add(serverStatus);
+        statusText.add(voiceStatus);
         JPanel sessionPanel = new JPanel(new BorderLayout(8, 0));
         sessionPanel.setBorder(BorderFactory.createEmptyBorder(8, 8, 0, 8));
         sessionPanel.add(statusText, BorderLayout.WEST);
@@ -188,9 +210,16 @@ public class MainFrame extends JFrame {
         onlineHeader.add(onlineCountLabel);
         left.add(onlineHeader, BorderLayout.NORTH);
         left.add(new JScrollPane(onlineList), BorderLayout.CENTER);
-        left.add(openDirect, BorderLayout.SOUTH);
+
+        JPanel chatControls = new JPanel(new GridLayout(3, 1, 0, 4));
+        chatControls.add(openDirect);
+        chatControls.add(enterToSendCheckBox);
+        chatControls.add(enterModeHint);
+        enterToSendCheckBox.addActionListener(e -> updateEnterModeHint());
+        left.add(chatControls, BorderLayout.SOUTH);
         root.add(left, BorderLayout.WEST);
         root.add(conversationTabs, BorderLayout.CENTER);
+        updateEnterModeHint();
         return root;
     }
 
@@ -472,9 +501,9 @@ public class MainFrame extends JFrame {
     }
 
     private void resetSessionUi() {
+        voiceChat.shutdown();
         currentUser = null;
         activeServer = null;
-        selectedFile = null;
         onlineModel.clear();
         groupModel.clear();
         historyGroupModel.removeAllElements();
@@ -482,6 +511,7 @@ public class MainFrame extends JFrame {
         historyModel.clear();
         conversations.clear();
         conversationPanels.clear();
+        voiceButtons.clear();
         conversationMessages.clear();
         conversationTabs.removeAll();
         mainTabs.setEnabledAt(0, true);
@@ -494,6 +524,7 @@ public class MainFrame extends JFrame {
         logoutButton.setVisible(false);
         sessionStatus.setText("Chua dang nhap");
         onlineCountLabel.setText("0 user online");
+        voiceStatus.setText("Voice: chua hoat dong");
         updateConnectionLabels();
         setTitle("JavaChat Swing");
     }
@@ -527,6 +558,7 @@ public class MainFrame extends JFrame {
             case ONLINE_USERS -> updateUsers(packet.get("users"));
             case GROUPS -> updateGroups(packet.get("groups"), packet.get("joinedGroups"));
             case MESSAGE -> receiveMessage(packet.get("message"));
+            case VOICE_FRAME -> receiveVoice(packet);
             case HISTORY -> showHistory(packet.get("messages"));
             default -> {
             }
@@ -565,6 +597,40 @@ public class MainFrame extends JFrame {
         groupList.repaint();
     }
 
+    private void updateEnterModeHint() {
+        enterModeHint.setText(enterToSendCheckBox.isSelected()
+                ? "Shift+Enter xuong dong"
+                : "Ctrl+Enter de gui");
+    }
+
+    private void toggleVoice(String key, boolean group, UserInfo user, GroupInfo groupInfo) {
+        if (currentUser == null || !network.isConnected()) {
+            JOptionPane.showMessageDialog(this, "Ban can dang nhap truoc khi voice chat", "Voice chat", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        if (voiceChat.isRecording(key)) {
+            voiceChat.stop();
+            updateVoiceButtons();
+            return;
+        }
+        try {
+            voiceChat.start(key, group, user, groupInfo);
+        } catch (Exception ex) {
+            showVoiceError("Khong mo duoc microphone: " + ex.getMessage());
+        }
+        updateVoiceButtons();
+    }
+
+    private void updateVoiceButtons() {
+        for (Map.Entry<String, JButton> entry : voiceButtons.entrySet()) {
+            entry.getValue().setText(voiceChat.isRecording(entry.getKey()) ? "Tat voice" : "Bat voice");
+        }
+    }
+
+    private void showVoiceStatus(String message) {
+        SwingUtilities.invokeLater(() -> voiceStatus.setText("Voice: " + message));
+    }
+
     private void openConversation(String key, String title, boolean group, UserInfo user, GroupInfo groupInfo) {
         if (conversations.containsKey(key)) {
             conversationTabs.setSelectedComponent(conversationPanels.get(key));
@@ -572,18 +638,49 @@ public class MainFrame extends JFrame {
         }
         JTextArea area = new JTextArea();
         area.setEditable(false);
-        JTextField input = new JTextField();
+        area.setLineWrap(true);
+        area.setWrapStyleWord(true);
+        JTextArea input = new JTextArea(3, 30);
+        input.setLineWrap(true);
+        input.setWrapStyleWord(true);
         JButton attach = new JButton("Chon file");
+        JButton clearFile = new JButton("Bo file");
         JButton saveFile = new JButton("Luu file trong chat");
+        JButton voice = new JButton("Bat voice");
         JButton send = new JButton("Gui");
         JLabel fileLabel = new JLabel("Chua chon file");
+        File[] selectedConversationFile = new File[1];
+
+        Runnable sendAction = () -> sendMessage(group, user, groupInfo, input, fileLabel, selectedConversationFile);
+        configureInputKeys(input, sendAction);
+
         JPanel bottom = new JPanel(new BorderLayout(6, 6));
         JPanel filePanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
         filePanel.add(attach);
+        filePanel.add(clearFile);
         filePanel.add(saveFile);
+        filePanel.add(voice);
         filePanel.add(fileLabel);
-        bottom.add(input, BorderLayout.CENTER);
-        bottom.add(filePanel, BorderLayout.NORTH);
+
+        JPanel emojiPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+        emojiPanel.add(new JLabel("Emoji"));
+        for (String emoji : EMOJIS) {
+            JButton emojiButton = new JButton(emoji);
+            emojiButton.setMargin(new Insets(2, 6, 2, 6));
+            emojiButton.addActionListener(e -> {
+                input.replaceSelection(emoji);
+                input.requestFocusInWindow();
+            });
+            emojiPanel.add(emojiButton);
+        }
+
+        JPanel toolPanel = new JPanel(new GridLayout(2, 1, 0, 4));
+        toolPanel.add(filePanel);
+        toolPanel.add(emojiPanel);
+        JScrollPane inputScroll = new JScrollPane(input);
+        inputScroll.setPreferredSize(new Dimension(0, 82));
+        bottom.add(inputScroll, BorderLayout.CENTER);
+        bottom.add(toolPanel, BorderLayout.NORTH);
         bottom.add(send, BorderLayout.EAST);
         JPanel panel = new JPanel(new BorderLayout(6, 6));
         panel.setBorder(BorderFactory.createEmptyBorder(8, 8, 8, 8));
@@ -591,6 +688,7 @@ public class MainFrame extends JFrame {
         panel.add(bottom, BorderLayout.SOUTH);
         conversations.put(key, area);
         conversationPanels.put(key, panel);
+        voiceButtons.put(key, voice);
         conversationMessages.put(key, new ArrayList<>());
         conversationTabs.addTab(title, panel);
         conversationTabs.setSelectedComponent(panel);
@@ -598,22 +696,60 @@ public class MainFrame extends JFrame {
         attach.addActionListener(e -> {
             JFileChooser chooser = new JFileChooser();
             if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
-                selectedFile = chooser.getSelectedFile();
-                fileLabel.setText(selectedFile.getName());
+                selectedConversationFile[0] = chooser.getSelectedFile();
+                fileLabel.setText(selectedConversationFile[0].getName());
             }
         });
+        clearFile.addActionListener(e -> {
+            selectedConversationFile[0] = null;
+            fileLabel.setText("Chua chon file");
+            input.requestFocusInWindow();
+        });
         saveFile.addActionListener(e -> saveConversationFile(key));
-        send.addActionListener(e -> sendMessage(group, user, groupInfo, input, fileLabel));
+        voice.addActionListener(e -> toggleVoice(key, group, user, groupInfo));
+        send.addActionListener(e -> sendAction.run());
+        updateVoiceButtons();
+        SwingUtilities.invokeLater(input::requestFocusInWindow);
     }
 
-    private void sendMessage(boolean group, UserInfo receiver, GroupInfo groupInfo, JTextField input, JLabel fileLabel) {
+    private void configureInputKeys(JTextArea input, Runnable sendAction) {
+        input.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0), "enter-action");
+        input.getActionMap().put("enter-action", new AbstractAction() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                if (enterToSendCheckBox.isSelected()) {
+                    sendAction.run();
+                } else {
+                    input.replaceSelection(System.lineSeparator());
+                }
+            }
+        });
+
+        input.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, InputEvent.SHIFT_DOWN_MASK), "newline-action");
+        input.getActionMap().put("newline-action", new AbstractAction() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                input.replaceSelection(System.lineSeparator());
+            }
+        });
+
+        input.getInputMap().put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, InputEvent.CTRL_DOWN_MASK), "send-action");
+        input.getActionMap().put("send-action", new AbstractAction() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                sendAction.run();
+            }
+        });
+    }
+
+    private void sendMessage(boolean group, UserInfo receiver, GroupInfo groupInfo, JTextArea input, JLabel fileLabel, File[] selectedConversationFile) {
         try {
-            String text = input.getText().trim();
+            String text = input.getText().strip();
             byte[] fileData = null;
             String fileName = null;
-            if (selectedFile != null) {
-                fileData = Files.readAllBytes(selectedFile.toPath());
-                fileName = selectedFile.getName();
+            if (selectedConversationFile[0] != null) {
+                fileData = Files.readAllBytes(selectedConversationFile[0].toPath());
+                fileName = selectedConversationFile[0].getName();
             }
             if (text.isBlank() && fileData == null) {
                 return;
@@ -629,8 +765,9 @@ public class MainFrame extends JFrame {
             }
             network.send(packet);
             input.setText("");
-            selectedFile = null;
+            selectedConversationFile[0] = null;
             fileLabel.setText("Chua chon file");
+            input.requestFocusInWindow();
         } catch (Exception ex) {
             JOptionPane.showMessageDialog(this, ex.getMessage(), "Khong gui duoc", JOptionPane.ERROR_MESSAGE);
         }
@@ -650,7 +787,33 @@ public class MainFrame extends JFrame {
             openConversation(key, title, false, new UserInfo(otherId, title), null);
         }
         conversationMessages.computeIfAbsent(key, ignored -> new ArrayList<>()).add(message);
-        conversations.get(key).append(format(message) + System.lineSeparator());
+        JTextArea area = conversations.get(key);
+        area.append(formatForConversation(message) + System.lineSeparator());
+        area.setCaretPosition(area.getDocument().getLength());
+    }
+
+    private void receiveVoice(ChatPacket packet) {
+        try {
+            UserInfo sender = packet.get("sender");
+            UserInfo user = currentUser;
+            if (sender == null || (user != null && sender.id() == user.id())) {
+                return;
+            }
+            voiceChat.play(sender, packet.get("audioData"));
+        } catch (Exception ex) {
+            showVoiceError("Khong nhan duoc voice: " + ex.getMessage());
+        }
+    }
+
+    private void showVoiceError(String message) {
+        SwingUtilities.invokeLater(() -> {
+            updateVoiceButtons();
+            JOptionPane.showMessageDialog(this, message, "Voice chat", JOptionPane.WARNING_MESSAGE);
+        });
+    }
+
+    private String formatBytes(long bytes) {
+        return String.format("%.1f KB", bytes / 1024.0);
     }
 
     private void showHistory(List<ChatMessage> messages) {
@@ -729,12 +892,35 @@ public class MainFrame extends JFrame {
         }
         line.append(msg.senderName()).append(": ");
         if (msg.content() != null && !msg.content().isBlank()) {
-            line.append(msg.content());
+            line.append(compact(msg.content()));
         }
         if (msg.hasFile()) {
             line.append(" [file: ").append(msg.fileName()).append(", ").append(msg.fileData().length).append(" bytes]");
         }
         return line.toString();
+    }
+
+    private String formatForConversation(ChatMessage msg) {
+        StringBuilder line = new StringBuilder();
+        if (msg.createdAt() != null) {
+            line.append("[").append(TIME.format(msg.createdAt())).append("] ");
+        }
+        line.append(msg.senderName()).append(": ");
+        if (msg.content() != null && !msg.content().isBlank()) {
+            line.append(normalizeNewlines(msg.content()));
+        }
+        if (msg.hasFile()) {
+            line.append(" [file: ").append(msg.fileName()).append(", ").append(msg.fileData().length).append(" bytes]");
+        }
+        return line.toString();
+    }
+
+    private String compact(String text) {
+        return normalizeNewlines(text).replace("\n", " / ");
+    }
+
+    private String normalizeNewlines(String text) {
+        return text.replace("\r\n", "\n").replace("\r", "\n");
     }
 
     private void addRow(JPanel panel, GridBagConstraints c, int row, String label, java.awt.Component field) {
@@ -745,6 +931,23 @@ public class MainFrame extends JFrame {
         c.gridx = 1;
         c.weightx = 1;
         panel.add(field, c);
+    }
+
+    private class VoiceStatusListener implements VoiceChatManager.Listener {
+        @Override
+        public void onSent(String key, long frames, long bytes) {
+            showVoiceStatus("dang gui " + frames + " frame (" + formatBytes(bytes) + ")");
+        }
+
+        @Override
+        public void onReceived(UserInfo sender, long frames, long bytes) {
+            showVoiceStatus("da nhan tu " + sender.username() + ": " + frames + " frame (" + formatBytes(bytes) + ")");
+        }
+
+        @Override
+        public void onError(String message) {
+            showVoiceError(message);
+        }
     }
 
     private record FileChoice(ChatMessage message) {

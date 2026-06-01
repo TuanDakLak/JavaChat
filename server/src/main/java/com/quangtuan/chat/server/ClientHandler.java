@@ -88,6 +88,8 @@ class ClientHandler implements Runnable {
             case GROUPS -> sendGroups();
             case SEND_DIRECT -> sendDirect(packet);
             case SEND_GROUP -> sendGroup(packet);
+            case VOICE_DIRECT -> relayDirectVoice(packet);
+            case VOICE_GROUP -> relayGroupVoice(packet);
             case HISTORY -> history(packet);
             case DELETE_HISTORY -> deleteHistory(packet);
             default -> send(ChatPacket.of(PacketType.ERROR).put("message", "Unsupported packet: " + packet.type()));
@@ -185,6 +187,43 @@ class ClientHandler implements Runnable {
         for (Integer memberId : database.groupMemberIds(group.id())) {
             server.sendToUser(memberId, event);
         }
+    }
+
+    private void relayDirectVoice(ChatPacket packet) {
+        requireLoggedIn();
+        UserInfo receiver = packet.get("receiver");
+        require(receiver != null, "Chua chon nguoi nhan voice");
+        byte[] audioData = validAudioData(packet);
+        ChatPacket event = ChatPacket.of(PacketType.VOICE_FRAME)
+                .put("scope", "direct")
+                .put("sender", user)
+                .put("receiverUserId", receiver.id())
+                .put("audioData", audioData);
+        server.sendToUser(receiver.id(), event);
+    }
+
+    private void relayGroupVoice(ChatPacket packet) throws SQLException {
+        requireLoggedIn();
+        GroupInfo group = packet.get("group");
+        require(group != null, "Chua chon group voice");
+        require(database.isGroupMember(group.id(), user.id()), "Ban can tham gia group truoc khi voice chat");
+        byte[] audioData = validAudioData(packet);
+        ChatPacket event = ChatPacket.of(PacketType.VOICE_FRAME)
+                .put("scope", "group")
+                .put("sender", user)
+                .put("group", group)
+                .put("audioData", audioData);
+        for (Integer memberId : database.groupMemberIds(group.id())) {
+            if (memberId != user.id()) {
+                server.sendToUser(memberId, event);
+            }
+        }
+    }
+
+    private byte[] validAudioData(ChatPacket packet) {
+        byte[] audioData = packet.get("audioData");
+        require(audioData != null && audioData.length > 0 && audioData.length <= 8192, "Du lieu voice khong hop le");
+        return audioData;
     }
 
     private void history(ChatPacket packet) throws SQLException {
