@@ -28,8 +28,10 @@ import java.awt.Dimension;
 import java.awt.FlowLayout;
 import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
+import java.awt.GridLayout;
 import java.awt.Insets;
 import java.io.File;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.format.DateTimeFormatter;
@@ -41,11 +43,11 @@ import java.util.Map;
 import java.util.Set;
 
 public class MainFrame extends JFrame {
-    private static final String DEFAULT_HOST = "localhost";
-    private static final int DEFAULT_PORT = 5555;
     private static final DateTimeFormatter TIME = DateTimeFormatter.ofPattern("dd/MM HH:mm");
 
     private final NetworkClient network = new NetworkClient();
+    private final DefaultListModel<ServerProfile> serverModel = new DefaultListModel<>();
+    private final JList<ServerProfile> serverList = new JList<>(serverModel);
     private final DefaultListModel<UserInfo> onlineModel = new DefaultListModel<>();
     private final DefaultListModel<GroupInfo> groupModel = new DefaultListModel<>();
     private final JList<UserInfo> onlineList = new JList<>(onlineModel);
@@ -61,10 +63,15 @@ public class MainFrame extends JFrame {
     private final DefaultListModel<ChatMessage> historyModel = new DefaultListModel<>();
     private final JList<ChatMessage> historyList = new JList<>(historyModel);
     private final JLabel sessionStatus = new JLabel("Chua dang nhap");
+    private final JLabel serverStatus = new JLabel("Server: chua ket noi");
+    private final JLabel selectedServerInfo = new JLabel("Server da chon: chua co");
+    private final JLabel loginServerStatus = new JLabel("Chua ket noi server");
+    private final JLabel onlineCountLabel = new JLabel("0 user online");
     private JButton loginButton;
     private JButton registerButton;
     private JButton logoutButton;
     private UserInfo currentUser;
+    private ServerProfile activeServer;
     private File selectedFile;
 
     public MainFrame() {
@@ -72,6 +79,7 @@ public class MainFrame extends JFrame {
         setDefaultCloseOperation(EXIT_ON_CLOSE);
         setMinimumSize(new Dimension(980, 640));
         setLocationRelativeTo(null);
+        loadServerProfiles();
         buildUi();
     }
 
@@ -80,9 +88,12 @@ public class MainFrame extends JFrame {
         logoutButton.setVisible(false);
         logoutButton.addActionListener(e -> logout());
 
+        JPanel statusText = new JPanel(new GridLayout(2, 1, 0, 2));
+        statusText.add(sessionStatus);
+        statusText.add(serverStatus);
         JPanel sessionPanel = new JPanel(new BorderLayout(8, 0));
         sessionPanel.setBorder(BorderFactory.createEmptyBorder(8, 8, 0, 8));
-        sessionPanel.add(sessionStatus, BorderLayout.WEST);
+        sessionPanel.add(statusText, BorderLayout.WEST);
         sessionPanel.add(logoutButton, BorderLayout.EAST);
 
         mainTabs.addTab("Dang nhap", loginPanel());
@@ -105,8 +116,39 @@ public class MainFrame extends JFrame {
         loginButton = new JButton("Dang nhap");
         registerButton = new JButton("Dang ky");
 
+        JPanel root = new JPanel(new BorderLayout(16, 0));
+        root.setBorder(BorderFactory.createEmptyBorder(16, 16, 16, 16));
+
+        serverList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        serverList.addListSelectionListener(e -> {
+            if (!e.getValueIsAdjusting()) {
+                updateSelectedServerInfo();
+            }
+        });
+
+        JPanel serverButtons = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
+        JButton addServer = new JButton("Them");
+        JButton editServer = new JButton("Sua");
+        JButton deleteServer = new JButton("Xoa");
+        serverButtons.add(addServer);
+        serverButtons.add(editServer);
+        serverButtons.add(deleteServer);
+
+        JPanel serverInfo = new JPanel(new GridLayout(3, 1, 0, 4));
+        serverInfo.add(selectedServerInfo);
+        serverInfo.add(loginServerStatus);
+        serverInfo.add(new JLabel("File config: " + ClientConfig.configFile()));
+
+        JPanel serverPanel = new JPanel(new BorderLayout(0, 8));
+        serverPanel.setPreferredSize(new Dimension(360, 0));
+        serverPanel.setBorder(BorderFactory.createTitledBorder("Danh sach server"));
+        serverPanel.add(new JScrollPane(serverList), BorderLayout.CENTER);
+        serverPanel.add(serverButtons, BorderLayout.NORTH);
+        serverPanel.add(serverInfo, BorderLayout.SOUTH);
+        root.add(serverPanel, BorderLayout.WEST);
+
         JPanel panel = new JPanel(new GridBagLayout());
-        panel.setBorder(BorderFactory.createEmptyBorder(24, 24, 24, 24));
+        panel.setBorder(BorderFactory.createTitledBorder("Tai khoan"));
         GridBagConstraints c = new GridBagConstraints();
         c.insets = new Insets(6, 6, 6, 6);
         c.fill = GridBagConstraints.HORIZONTAL;
@@ -118,10 +160,15 @@ public class MainFrame extends JFrame {
         buttons.add(loginButton);
         buttons.add(registerButton);
         panel.add(buttons, c);
+        root.add(panel, BorderLayout.CENTER);
 
         loginButton.addActionListener(e -> connectAndSend(PacketType.LOGIN, username.getText(), new String(password.getPassword())));
         registerButton.addActionListener(e -> connectAndSend(PacketType.REGISTER, username.getText(), new String(password.getPassword())));
-        return panel;
+        addServer.addActionListener(e -> addServerProfile());
+        editServer.addActionListener(e -> editServerProfile());
+        deleteServer.addActionListener(e -> deleteServerProfile());
+        updateSelectedServerInfo();
+        return root;
     }
 
     private JPanel chatPanel() {
@@ -136,7 +183,10 @@ public class MainFrame extends JFrame {
                 openConversation("u:" + selected.id(), selected.username(), false, selected, null);
             }
         });
-        left.add(new JLabel("User online"), BorderLayout.NORTH);
+        JPanel onlineHeader = new JPanel(new GridLayout(2, 1, 0, 2));
+        onlineHeader.add(new JLabel("User online"));
+        onlineHeader.add(onlineCountLabel);
+        left.add(onlineHeader, BorderLayout.NORTH);
         left.add(new JScrollPane(onlineList), BorderLayout.CENTER);
         left.add(openDirect, BorderLayout.SOUTH);
         root.add(left, BorderLayout.WEST);
@@ -253,13 +303,148 @@ public class MainFrame extends JFrame {
         return root;
     }
 
-    private void connectAndSend(PacketType type, String username, String password) {
+    private void loadServerProfiles() {
+        for (ServerProfile server : ClientConfig.loadServers()) {
+            serverModel.addElement(server);
+        }
+        if (!serverModel.isEmpty()) {
+            serverList.setSelectedIndex(0);
+        }
+    }
+
+    private void addServerProfile() {
+        ServerProfile profile = promptServerProfile("Them server", new ServerProfile("Server moi", "localhost", 5555));
+        if (profile != null) {
+            serverModel.addElement(profile);
+            serverList.setSelectedIndex(serverModel.size() - 1);
+            saveServerProfiles();
+        }
+    }
+
+    private void editServerProfile() {
+        int index = serverList.getSelectedIndex();
+        if (index < 0) {
+            JOptionPane.showMessageDialog(this, "Hay chon server can sua", "Chua chon server", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        ServerProfile selected = serverModel.getElementAt(index);
+        if (isActiveServer(selected)) {
+            JOptionPane.showMessageDialog(this, "Hay dang xuat truoc khi sua server dang ket noi", "Dang ket noi", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        ServerProfile updated = promptServerProfile("Sua server", selected);
+        if (updated != null) {
+            serverModel.set(index, updated);
+            serverList.setSelectedIndex(index);
+            saveServerProfiles();
+        }
+    }
+
+    private void deleteServerProfile() {
+        int index = serverList.getSelectedIndex();
+        if (index < 0) {
+            JOptionPane.showMessageDialog(this, "Hay chon server can xoa", "Chua chon server", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        ServerProfile selected = serverModel.getElementAt(index);
+        if (isActiveServer(selected)) {
+            JOptionPane.showMessageDialog(this, "Hay dang xuat truoc khi xoa server dang ket noi", "Dang ket noi", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        int confirm = JOptionPane.showConfirmDialog(
+                this,
+                "Xoa server " + selected + "?",
+                "Xac nhan xoa",
+                JOptionPane.YES_NO_OPTION);
+        if (confirm == JOptionPane.YES_OPTION) {
+            serverModel.remove(index);
+            if (!serverModel.isEmpty()) {
+                serverList.setSelectedIndex(Math.min(index, serverModel.size() - 1));
+            }
+            updateSelectedServerInfo();
+            saveServerProfiles();
+        }
+    }
+
+    private ServerProfile promptServerProfile(String title, ServerProfile initial) {
+        JTextField name = new JTextField(initial.name(), 20);
+        JTextField host = new JTextField(initial.host(), 20);
+        JTextField port = new JTextField(String.valueOf(initial.port()), 8);
+        JPanel form = new JPanel(new GridBagLayout());
+        GridBagConstraints c = new GridBagConstraints();
+        c.insets = new Insets(6, 6, 6, 6);
+        c.fill = GridBagConstraints.HORIZONTAL;
+        addRow(form, c, 0, "Ten server", name);
+        addRow(form, c, 1, "Host", host);
+        addRow(form, c, 2, "Port", port);
+
+        while (true) {
+            int result = JOptionPane.showConfirmDialog(this, form, title, JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE);
+            if (result != JOptionPane.OK_OPTION) {
+                return null;
+            }
+            try {
+                return new ServerProfile(name.getText(), host.getText(), Integer.parseInt(port.getText().trim()));
+            } catch (Exception ex) {
+                JOptionPane.showMessageDialog(this, ex.getMessage(), "Server khong hop le", JOptionPane.ERROR_MESSAGE);
+            }
+        }
+    }
+
+    private boolean isActiveServer(ServerProfile profile) {
+        return network.isConnected() && activeServer != null && activeServer.sameEndpoint(profile);
+    }
+
+    private void saveServerProfiles() {
+        List<ServerProfile> servers = new ArrayList<>();
+        for (int i = 0; i < serverModel.size(); i++) {
+            servers.add(serverModel.getElementAt(i));
+        }
         try {
+            ClientConfig.saveServers(servers);
+        } catch (IOException ex) {
+            JOptionPane.showMessageDialog(this, ex.getMessage(), "Khong luu duoc config", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private void updateSelectedServerInfo() {
+        ServerProfile selected = serverList.getSelectedValue();
+        selectedServerInfo.setText(selected == null
+                ? "Server da chon: chua co"
+                : "Server da chon: " + selected.endpoint());
+    }
+
+    private void updateConnectionLabels() {
+        if (activeServer == null || !network.isConnected()) {
+            serverStatus.setText("Server: chua ket noi");
+            loginServerStatus.setText("Chua ket noi server");
+        } else {
+            serverStatus.setText("Server: " + activeServer);
+            loginServerStatus.setText("Dang ket noi: " + activeServer);
+        }
+    }
+
+    private void connectAndSend(PacketType type, String username, String password) {
+        ServerProfile selectedServer = serverList.getSelectedValue();
+        if (selectedServer == null) {
+            JOptionPane.showMessageDialog(this, "Hay chon server de ket noi", "Chua chon server", JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+        try {
+            if (network.isConnected() && activeServer != null && !activeServer.sameEndpoint(selectedServer)) {
+                network.disconnect();
+                activeServer = null;
+                updateConnectionLabels();
+            }
             if (!network.isConnected()) {
-                network.connect(DEFAULT_HOST, DEFAULT_PORT, this::onPacket);
+                network.connect(selectedServer.host(), selectedServer.port(), this::onPacket);
+                activeServer = selectedServer;
+                updateConnectionLabels();
             }
             network.send(ChatPacket.of(type).put("username", username).put("password", password));
         } catch (Exception ex) {
+            activeServer = null;
+            updateConnectionLabels();
             JOptionPane.showMessageDialog(this, ex.getMessage(), "Loi ket noi", JOptionPane.ERROR_MESSAGE);
         }
     }
@@ -269,7 +454,17 @@ public class MainFrame extends JFrame {
             network.send(ChatPacket.of(PacketType.LOGOUT));
         }
         network.disconnect();
+        resetSessionUi();
+    }
+
+    private void resetAfterConnectionLost() {
+        network.disconnect();
+        resetSessionUi();
+    }
+
+    private void resetSessionUi() {
         currentUser = null;
+        activeServer = null;
         selectedFile = null;
         onlineModel.clear();
         groupModel.clear();
@@ -289,6 +484,8 @@ public class MainFrame extends JFrame {
         registerButton.setVisible(true);
         logoutButton.setVisible(false);
         sessionStatus.setText("Chua dang nhap");
+        onlineCountLabel.setText("0 user online");
+        updateConnectionLabels();
         setTitle("JavaChat Swing");
     }
 
@@ -307,11 +504,17 @@ public class MainFrame extends JFrame {
                     loginButton.setVisible(false);
                     registerButton.setVisible(false);
                     logoutButton.setVisible(true);
-                    sessionStatus.setText("Dang nhap: " + currentUser.username() + " (" + DEFAULT_HOST + ":" + DEFAULT_PORT + ")");
+                    sessionStatus.setText("Dang nhap: " + currentUser.username());
+                    updateConnectionLabels();
                     setTitle("JavaChat Swing - " + currentUser.username());
                 }
             }
-            case ERROR -> JOptionPane.showMessageDialog(this, packet.text("message"), "Loi", JOptionPane.ERROR_MESSAGE);
+            case ERROR -> {
+                JOptionPane.showMessageDialog(this, packet.text("message"), "Loi", JOptionPane.ERROR_MESSAGE);
+                if (!network.isConnected()) {
+                    resetAfterConnectionLost();
+                }
+            }
             case ONLINE_USERS -> updateUsers(packet.get("users"));
             case GROUPS -> updateGroups(packet.get("groups"), packet.get("joinedGroups"));
             case MESSAGE -> receiveMessage(packet.get("message"));
@@ -326,6 +529,7 @@ public class MainFrame extends JFrame {
         if (users != null) {
             users.forEach(onlineModel::addElement);
         }
+        onlineCountLabel.setText(onlineModel.size() + " user online");
     }
 
     private void updateGroups(List<GroupInfo> groups, List<GroupInfo> joinedGroups) {

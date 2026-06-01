@@ -47,7 +47,7 @@ class ClientHandler implements Runnable {
             send(ChatPacket.of(PacketType.ERROR).put("message", e.getMessage()));
         } finally {
             if (user != null) {
-                server.markOffline(user.id());
+                server.markOffline(user.id(), this);
             }
         }
     }
