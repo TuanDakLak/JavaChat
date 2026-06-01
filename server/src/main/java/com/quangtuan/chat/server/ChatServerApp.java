@@ -17,7 +17,8 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class ChatServerApp {
-    private final Database database = new Database();
+    private volatile ServerSettings settings = ServerSettings.load();
+    private final Database database = new Database(settings);
     private final Map<Integer, ClientHandler> online = new ConcurrentHashMap<>();
     private final Object lifecycleLock = new Object();
     private volatile ServerSocket serverSocket;
@@ -32,15 +33,31 @@ public class ChatServerApp {
         this.monitor = monitor == null ? ServerMonitor.NONE : monitor;
     }
 
+    public ServerSettings settings() {
+        return settings;
+    }
+
+    public void updateSettings(ServerSettings settings) {
+        synchronized (lifecycleLock) {
+            if (running) {
+                throw new IllegalStateException("Hay dong server truoc khi doi config");
+            }
+            this.settings = settings;
+            database.setSettings(settings);
+        }
+    }
+
     public void startServer() throws SQLException, IOException {
+        ServerSettings currentSettings;
         synchronized (lifecycleLock) {
             if (running) {
                 return;
             }
+            currentSettings = settings;
         }
         database.init();
 
-        ServerSocket openedSocket = new ServerSocket(ServerConfig.CHAT_PORT);
+        ServerSocket openedSocket = new ServerSocket(currentSettings.chatPort());
         synchronized (lifecycleLock) {
             if (running) {
                 openedSocket.close();
@@ -49,8 +66,8 @@ public class ChatServerApp {
             serverSocket = openedSocket;
             running = true;
         }
-        notifyStatus("Dang chay tren cong " + ServerConfig.CHAT_PORT);
-        notifyLog("JavaChat server listening on port " + ServerConfig.CHAT_PORT);
+        notifyStatus("Dang chay tren cong " + currentSettings.chatPort());
+        notifyLog("JavaChat server listening on port " + currentSettings.chatPort());
 
         Thread acceptThread = new Thread(() -> acceptLoop(openedSocket), "server-accept");
         acceptThread.setDaemon(true);

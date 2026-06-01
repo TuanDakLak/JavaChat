@@ -10,7 +10,10 @@ import java.util.List;
 import java.util.Properties;
 
 final class ClientConfig {
-    private static final Path CONFIG_FILE = Path.of(System.getProperty("user.home"), ".javachat-client.properties");
+    private static final Path CONFIG_FILE = projectRoot()
+            .resolve("config")
+            .resolve("client-servers.properties");
+    private static final Path OLD_CONFIG_FILE = Path.of(System.getProperty("user.home"), ".javachat-client.properties");
 
     private ClientConfig() {
     }
@@ -21,9 +24,10 @@ final class ClientConfig {
 
     static List<ServerProfile> loadServers() {
         Properties props = new Properties();
-        boolean hasConfig = Files.exists(CONFIG_FILE);
+        Path source = Files.exists(CONFIG_FILE) ? CONFIG_FILE : OLD_CONFIG_FILE;
+        boolean hasConfig = Files.exists(source);
         if (hasConfig) {
-            try (InputStream input = Files.newInputStream(CONFIG_FILE)) {
+            try (InputStream input = Files.newInputStream(source)) {
                 props.load(input);
             } catch (IOException ignored) {
             }
@@ -45,6 +49,12 @@ final class ClientConfig {
         if (servers.isEmpty() && !hasConfig) {
             servers.add(new ServerProfile("Localhost", "localhost", 5555));
         }
+        if (!servers.isEmpty() && OLD_CONFIG_FILE.equals(source)) {
+            try {
+                saveServers(servers);
+            } catch (IOException ignored) {
+            }
+        }
         return servers;
     }
 
@@ -58,6 +68,7 @@ final class ClientConfig {
             props.setProperty(prefix + "host", server.host());
             props.setProperty(prefix + "port", String.valueOf(server.port()));
         }
+        Files.createDirectories(CONFIG_FILE.getParent());
         try (OutputStream output = Files.newOutputStream(CONFIG_FILE)) {
             props.store(output, "JavaChat client servers");
         }
@@ -69,5 +80,17 @@ final class ClientConfig {
         } catch (Exception ignored) {
             return fallback;
         }
+    }
+
+    private static Path projectRoot() {
+        Path current = Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize();
+        for (Path path = current; path != null; path = path.getParent()) {
+            if (Files.exists(path.resolve("pom.xml"))
+                    && Files.isDirectory(path.resolve("client"))
+                    && Files.isDirectory(path.resolve("server"))) {
+                return path;
+            }
+        }
+        return current;
     }
 }

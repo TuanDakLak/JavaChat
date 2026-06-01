@@ -443,9 +443,18 @@ public class MainFrame extends JFrame {
             }
             network.send(ChatPacket.of(type).put("username", username).put("password", password));
         } catch (Exception ex) {
+            network.disconnect();
             activeServer = null;
             updateConnectionLabels();
-            JOptionPane.showMessageDialog(this, ex.getMessage(), "Loi ket noi", JOptionPane.ERROR_MESSAGE);
+            JOptionPane.showMessageDialog(
+                    this,
+                    "Khong ket noi duoc " + selectedServer.endpoint()
+                            + System.lineSeparator()
+                            + "Hay kiem tra server da mo dung CHAT_PORT."
+                            + System.lineSeparator()
+                            + ex.getMessage(),
+                    "Loi ket noi",
+                    JOptionPane.ERROR_MESSAGE);
         }
     }
 

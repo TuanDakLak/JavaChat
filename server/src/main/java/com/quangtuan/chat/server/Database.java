@@ -15,8 +15,19 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class Database {
+    private volatile ServerSettings settings;
+
+    public Database(ServerSettings settings) {
+        this.settings = settings;
+    }
+
+    public void setSettings(ServerSettings settings) {
+        this.settings = settings;
+    }
+
     public Connection connect() throws SQLException {
-        return DriverManager.getConnection(ServerConfig.jdbcUrl(), ServerConfig.DB_USER, ServerConfig.DB_PASSWORD);
+        ServerSettings current = settings;
+        return DriverManager.getConnection(current.jdbcUrl(), current.dbUser(), current.dbPassword());
     }
 
     public void init() throws SQLException {
